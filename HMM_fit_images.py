@@ -1,10 +1,14 @@
+import _strptime
+from collections import OrderedDict
+from datetime import datetime
 from hmmlearn import hmm
+from sklearn.externals import joblib
 import nibabel as ni
 import numpy as np
 import threading, Queue
 import csv
 import os, sys
-import pdb
+import debug, pdb
 
 singlelock = threading.Lock()
 
@@ -23,9 +27,10 @@ def build_estimators(csvfile, max_timepoints = 100):
     csv order must be PIDN, DCDate, Path 
 
     """
+
+    print "Building estimators"
     f = open(csvfile, 'rb')
     reader = csv.reader(f)
-
     estimators = OrderedDict()
     for row in reader:
         if "PIDN" not in row[0]:
@@ -38,6 +43,7 @@ def build_estimators(csvfile, max_timepoints = 100):
                     estimators[PIDN]["ID"]    = PIDN
             # Add dates
             DATE = row[1]
+            print PIDN, DATE
             if (len(estimators[PIDN].keys()) < max_timepoints) & \
                (DATE not in estimators[PIDN]["dates"].keys()):
                     # Add paths
@@ -57,12 +63,12 @@ def multi_dim_list(num_lists):
 
     return ndlist
 
-def list_to_array(inlist, num_lists):
+def md_list_to_array(inlist, num_lists):
 
-    """ Convert to array of arrays"""
+    """ Convert multi dim list to array of arrays"""
 
     for v in range(0, num_lists):
-        inlist[0] = np.asarray(inlist[0])
+        inlist[v] = np.asarray(inlist[v])
 
     return inlist
 
@@ -104,7 +110,7 @@ class HMM(threading.Thread):
                  outdir,
                  Procs = 16):
         threading.Thread.__init__(self)
-        
+
         # IO and threading
         self.procs_ = Procs
         self.queue_ = Queue.Queue()
@@ -120,7 +126,7 @@ class HMM(threading.Thread):
         self.n_voxels   = len(nonzero_indices)   # scalar number of voxels        
 
         # HMM
-        time_series = 2  # remove hardcode in future
+        self.time_series = 2  # remove hardcode in future
         self.wbins           = wbins
         self.n_hidden_states = len(wbins)
         self.global_obs_list = multi_dim_list(self.n_voxels)
@@ -137,7 +143,17 @@ class HMM(threading.Thread):
         self.global_obs_list[v].extend((state_i, state_j))
         singlelock.release()
 
-    def build_sufficient_stats(self):
+    def record_time_point(self, f, subjid1, date1, date2, delta):
+        
+        """ This function is threadlocked """
+
+        try:
+            f.write("{:s},{:s},{:s},{:d}\n".format(subjid1, date1, date2, delta))
+        except NameError:
+            print "File object 'f' has not been opened"
+            sys.exit(1)
+
+    def build_observations(self):
         
         """ This function is multithreaded """
 
@@ -149,9 +165,8 @@ class HMM(threading.Thread):
                 # init segment 1 and segment 2
                 s1 = None
                 s2 = None
-
                 for t in range(tps - 1):
-                    if (s1 is None) & (s2 is None):
+                    if (s1 is None) and (s2 is None):
                         # We are in initial run or previous segment failed check
                         s1 = Setup_subject(ID   = PIDN["ID"],
                                            DATE = PIDN["dates"].keys()[t],
@@ -170,7 +185,7 @@ class HMM(threading.Thread):
                     if self.time_delta_min <= delta <= self.time_delta_max:
                         # Load images
                         if not s1.load_status:
-                            s1.load_image
+                            s1.load_image()
                             s1.mask_image(nonzero_indices = self.nz_indices)
                         s2.load_image()
                         s2.mask_image(nonzero_indices = self.nz_indices)
@@ -180,7 +195,7 @@ class HMM(threading.Thread):
                         self.record_time_point(self.train, s1.id, s1.date, s2.date, delta)
                         singlelock.release()
                         #
-                        for v in range(self.voxel_length):
+                        for v in range(0, self.n_voxels):
                             self.append_series(v, s1, s2)
                     else:
                         singlelock.acquire()
@@ -192,11 +207,12 @@ class HMM(threading.Thread):
                 self.queue_.task_done()
         except:
             print "Unexpected error:", sys.exc_info()
+            #pdb.set_trace()
 
     def build_length_list(self):
         self.global_len_list = []
         for v in range(0, self.n_voxels):
-            self.global_len_list.append(np.array([2] * (self.global_obs_list[v].shape[0] / 2)))
+            self.global_len_list.append(np.array([self.time_series] * (len(self.global_obs_list[v]) / self.time_series)))
 
     def GaussianHMM_fit(self, X, lengths, n_components):
         """
@@ -213,15 +229,25 @@ class HMM(threading.Thread):
 
         return model
 
-    def vx_Train(self):
-        for v in self.n_voxels:
-            X = self.global_obs_matrix[v].reshape(-1, 1)
-            lengths = self.global_len_list[v]
-            v_model = GaussianHmm(voxel_obs, lengths_vector, n_components = self.n_hidden_states)
-
-            # save model
-            # model.transmat_
-            # model.startprob_
+    def vxTrain(self):
+        try:
+            while True:
+                vidx = self.queue_.get() # get voxel index
+                #singlelock.acquire()
+                print "v{}".format(vidx)
+                #singlelock.release()
+                X = np.asarray(self.global_obs_list[vidx]).reshape(-1, 1)
+                lengths = self.global_len_list[vidx]
+                v_model = self.GaussianHMM_fit(X, lengths, n_components = self.n_hidden_states)
+                singlelock.acquire()
+                self.models[vidx].append(v_model)
+                singlelock.release()
+                # save model
+                # model.transmat_
+                # model.startprob_
+        except:
+            print "Unexpected error:", sys.exc_info()
+            pdb.set_trace()
 
     def threading_(self):
         self.train = open(os.path.join(self.outdir, 'Train.csv'), 'w')
@@ -229,8 +255,9 @@ class HMM(threading.Thread):
         self.train.write("PIDN,Start_Date,End_Date,Delta\n")
         self.test.write("PIDN,Start_Date,End_Date,Delta\n")
         #
+        print "Building observations"
         for i in range(self.procs_):
-            t = threading.Thread(target = self.build_obs_matrix)
+            t = threading.Thread(target = self.build_observations)
             t.daemon = True
             t.start()
         for pidn in self.estimators:
@@ -240,5 +267,22 @@ class HMM(threading.Thread):
         self.train.close()
         self.test.close()
 
+    def vxTrain_threading_(self):
+        self.build_length_list()
+        self.queue_ = Queue.Queue()
+        self.models = multi_dim_list(self.n_voxels)
+        print "Training models"
+        for i in range(self.procs_):
+            t = threading.Thread(target = self.vxTrain)
+            t.daemon = True
+            t.start()
+        for v in range(0, self.n_voxels):
+            self.queue_.put(v)
+        # block until tasks are done
+        self.queue_.join()
+        print "Saving models"
+        joblib.dump(models, os.path.join(self.outdir, 'Vx_models.pkl'))
+
     def run(self):
         self.threading_()
+        self.vxTrain_threading_()
