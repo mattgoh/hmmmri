@@ -1,20 +1,22 @@
 from hmmlearn import hmm
 from itertools import permutations
+import threading, Queue
 import numpy as np
+import nibabel as ni
 import matplotlib.pyplot as plt
 import time
 import debug
 import pdb
-import sys
-
-
+import sys, os
+singlelock = threading.Lock()
 
 class Simulate_data():
     def __init__(self, states_dict, transmat, samples = 900):
-        self.states          = states_dict
-        self.n_samples       = samples
-        self.n_components    = len(states_dict)
-        self.transmat        = transmat
+        self.states       = states_dict
+        self.transmat     = transmat
+        self.n_samples    = samples
+        self.n_components = len(states_dict)
+        self.queue_ = [Queue.Queue()]
         #
         self.check_states_def_()
 
@@ -77,7 +79,7 @@ class Simulate_data():
         # initialize q_i with uniform dist.
         Q[:,0] = np.random.randint(0, self.n_components, size = self.n_samples)
         #
-        for i in range(1, sequence_length-1):
+        for i in range(1, sequence_length):
             Q[:, i] = np.asarray([self.next_state_(qi) for qi in Q[:, i-1]])
         Q = Q.astype(int)
         print "#############################"
@@ -92,7 +94,7 @@ class Simulate_data():
         """
 
         obs = np.empty((self.n_samples, sequence_length))
-        for seq in range(sequence_length-1):
+        for seq in range(sequence_length):
             obs[:, seq] = [self.generate_sample_(self.states[q], pdf = self.states[q]["pdf"], size = 1 ) for q in Q[:, seq]]
         print "#############################"
         print "Observations", obs.shape
@@ -117,9 +119,53 @@ class Simulate_data():
             ind = np.flatnonzero(labels[:, 1] == comp)
             plt.hist(data[ind, 1], color = colors[comp], bins = nbins, ec ='k', alpha = 0.7)
         plt.title('$s_j$', fontsize = 18)
-
         plt.tight_layout()
         plt.show()
+
+    def array_to_image_(self, array, nz_indices, target_shape, target_num_voxels):
+        image_ = np.zeros(target_num_voxels)
+        image_[nz_indices] = array
+        final_image = np.reshape(image_, target_shape)
+
+        return final_image
+
+    def save_nifti_(self, data, affine, outdir, filename):
+        image   = ni.Nifti1Image(data, affine, header = None)
+        outfile = os.path.join(outdir, filename)
+        image.to_filename(outfile)
+
+    def save_test_data(self, state_seq, obs_seq, outdir):
+        """ This function is multithreaded """
+        try:
+            while True:
+                sample_idx = self.queue_[0].get()
+                singlelock.acquire()
+                for col_idx in range(state_seq.shape[1]):
+                    print sample_idx, col_idx, state_seq[sample_idx, col_idx]
+                    obs_image   = self.array_to_image_(obs_seq[sample_idx, col_idx], 0, (121, 145, 121), 121*145*121)
+                    state_image = self.array_to_image_(state_seq[sample_idx, col_idx], 0 , (121, 145, 121), 121*145*121)
+                    image_ = []
+                    image_.extend((obs_image, state_image))
+                    image_ = np.asarray(image_)
+                    image_ = np.rollaxis(image_, 0, 4)
+                    self.save_nifti_(image_, np.eye(4), outdir, filename = "Sim_S{:04d}_T{:02d}".format(sample_idx, col_idx))
+                singlelock.release()
+                self.queue_[0].task_done()
+        except:
+            print "Unexpected error:", sys.exc_info()
+
+    def save_test_data_threading_(self, procs, state_seq, obs_seq, outdir):
+        print "saving test data to nifti..."
+        for i in range(procs):
+            print "thread", i
+            t = threading.Thread(target = self.save_test_data, args = [state_seq, obs_seq, outdir])
+            t.daemon = True
+            t.start()
+            print i, "start"
+        for sample_idx in range(state_seq.shape[0]):
+            self.queue_[0].put(sample_idx)
+        # block until tasks are done
+        self.queue_[0].join()
 
 class HMM():
     def __init__(self):
@@ -180,16 +226,15 @@ class HMM():
     def test(self,data, labels, target):
         self.infer_state(data, labels, target)
 
-
+       
 ########################### 
 #    Static Parameters    #
 ###########################
 
 np.random.seed(1)
-n = 900
-
+OUTDIR = "/home/sgoh/workspace//simdata"
+PROCS = 6
 # States Definition
-
 s0 = {'pdf': 'normal',
       'mu': 0,
       'sigma': 0.08}
@@ -203,15 +248,21 @@ s3 = {'pdf': 'normal',
       'mu': 0.8,
       'sigma': 0.08}
 
+############################ 
+#    Dynamic Parameters    #
+############################
+n = 50
+SEQUENCE_LENGTH = 4
 
+###########################
+#          MAIN           #
+###########################
 states = [s0, s1, s2, s3]
 
 # N components
-
 components = len(states)
 
 # Transition matrix
-
 transmat = np.random.rand(components, components)
 transmat /= np.tile(transmat.sum(axis = 1), (components, 1)).T
 print transmat
@@ -220,21 +271,22 @@ print transmat
 #                      [0.1, 0.2, 0.7]])
 # transmat /= transmat.sum(axis = 1)
 
-############################ 
-#    Dynamic Parameters    #
-############################
-
 # init
 sim = Simulate_data(states_dict = states,
                     transmat    = transmat,
-                    samples     = 900)
+                    samples     = n)
 # Test data
-state_seq_test = sim.generate_state_sequence(sequence_length = 4)
-data_test   = sim.generate_observations(Q = state_seq_test, sequence_length = 4)
+state_seq_test = sim.generate_state_sequence(sequence_length = SEQUENCE_LENGTH)
+data_test   = sim.generate_observations(Q = state_seq_test, sequence_length = SEQUENCE_LENGTH)
 labels_test = state_seq_test.copy()
+obs_header = ','.join(["obs_{:d}".format(n) for n in range(0,SEQUENCE_LENGTH)])
+state_header = ','.join(["state_{:d}".format(n) for n in range(0,SEQUENCE_LENGTH)])
+np.savetxt(os.path.join(OUTDIR, "Sim.test.data.csv"), data_test, delimiter=",", fmt = "%1.03f", header = obs_header)
+np.savetxt(os.path.join(OUTDIR, "Sim.test.labels.csv"), labels_test, delimiter=",", fmt = "%1d",header = state_header)
+sim.save_test_data_threading_(procs = PROCS, state_seq = state_seq_test, obs_seq = data_test, outdir = OUTDIR)
 
 # Train data
-for s in range(5,10):
+for s in range(2,5): # lower must start at 2
     print "-------------------------------------------------"
     print "-------------------------------------------------"
     print "Training with sequence length {:d}".format(s)
