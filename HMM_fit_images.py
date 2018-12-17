@@ -106,7 +106,7 @@ class HMM(threading.Thread):
     # receives PIDN group data from queue
     def __init__(self,
                  csv,
-                 wbins,
+                 n_states,
                  nonzero_indices,
                  time_delta_min, 
                  time_delta_max,
@@ -135,8 +135,7 @@ class HMM(threading.Thread):
 
         # HMM
         self.time_series = 2  # remove hardcode in future
-        self.wbins           = wbins
-        self.n_hidden_states = len(wbins)
+        self.n_hidden_states = n_states
         self.global_obs_list = multi_dim_list(self.n_voxels)
         self.generate_observations = generate_observations
 
