@@ -226,20 +226,18 @@ class HMM():
         self.infer_state(data, labels, target)
 
 
-def run(procs, states, transmat, num_samples, train_sequence_length, outdir):
-
-    #
-    #print "#############################"
-    #print "Predict next state"
-    #hmm_method.predict_next_state(hmm_method.qi, labels_test)
-
-########################### 
-#    Static Parameters    #
-###########################
+###################################
+#    Static/Dynamic Parameters    #
+###################################
 
 np.random.seed(1)
-OUTDIR = "/home/sgoh/workspace//simdata"
+NUM_SAMPLES          = 500
+TEST_SEQUENCE_LENGTH = 4
+OUTDIR               = "/home/sgoh/workspace//simdata"
+
+####################
 # States Definition
+####################
 s0 = {'pdf': 'normal',
       'mu': 0,
       'sigma': 0.08}
@@ -253,23 +251,17 @@ s3 = {'pdf': 'normal',
       'mu': 0.8,
       'sigma': 0.08}
 
-############################ 
-#    Dynamic Parameters    #
-############################
-NUM_SAMPLES = 500
-TEST_SEQUENCE_LENGTH = 4
-
 ###########################
 #          MAIN           #
 ###########################
 states = [s0, s1, s2, s3]
 
 # N components
-components = len(states)
+COMPONENTS = len(states)
 
 # Transition matrix
-transmat = np.random.rand(components, components)
-transmat /= np.tile(transmat.sum(axis = 1), (components, 1)).T
+transmat = np.random.rand(COMPONENTS, COMPONENTS)
+transmat /= np.tile(transmat.sum(axis = 1), (COMPONENTS, 1)).T
 print transmat
 # transmat = np.array([[0.5, 0.3, 0.2],
 #                      [0.1, 0.6, 0.3],
@@ -279,7 +271,8 @@ print transmat
 sim = Simulate_data(states_dict = states,
                     transmat    = transmat,
                     samples     = NUM_SAMPLES)
-# Test data
+# Generate test data first
+# fixed test sequence length
 state_seq_test = sim.generate_state_sequence(sequence_length = TEST_SEQUENCE_LENGTH)
 data_test      = sim.generate_observations(Q = state_seq_test, sequence_length = TEST_SEQUENCE_LENGTH)
 labels_test    = state_seq_test.copy()
@@ -290,38 +283,24 @@ np.savetxt(os.path.join(outdir, "Sim.test.labels.csv"), labels_test, delimiter="
 sim.float_to_nifti_threading_(procs = procs, state_seq = state_seq_test, obs_seq = data_test, outdir = outdir)
 
 
-
+# Vary train sequence length
 for train_seq_len in range(2,10): # lower bound must be min 2
-    # init
-    components = len(states)
-    sim = Simulate_data(states_dict = states,
-                        transmat    = transmat,
-                        samples     = num_samples)
     # Train data
     print "-------------------------------------------------"
     print "Training with sequence length {:d}".format(s)
     print "-------------------------------------------------"
     #
-    state_seq_train = sim.generate_state_sequence(sequence_length = train_sequence_length)
-    data_train      = sim.generate_observations(Q = state_seq_train, sequence_length = train_sequence_length)
+    state_seq_train = sim.generate_state_sequence(sequence_length = train_seq_len)
+    data_train      = sim.generate_observations(Q = state_seq_train, sequence_length = train_seq_len)
     labels_train    = state_seq_train.copy()
-    np.savetxt(os.path.join(outdir, "Sim.train.data.seq.{:02d}.csv".format(train_sequence_length)), data_train, delimiter=",", fmt = "%1.03f", header = obs_header)
-    np.savetxt(os.path.join(outdir, "Sim.train.labels.seq.{:02d}.csv".format(train_sequence_length)), labels_train, delimiter=",", fmt = "%1d", header = state_header)
+    np.savetxt(os.path.join(OUTDIR, "Sim.train.data.seq.{:02d}.csv".format(train_seq_len)), data_train, delimiter=",", fmt = "%1.03f", header = obs_header)
+    np.savetxt(os.path.join(OUTDIR, "Sim.train.labels.seq.{:02d}.csv".format(train_seq_len)), labels_train, delimiter=",", fmt = "%1d", header = state_header)
     #
     hmm_method = HMM()
-    hmm_method.train(data_train, n_components = components)
+    hmm_method.train(data_train, n_components = COMPONENTS)
     #
     print "#############################"
     print "True transmat:\n", transmat
     print "Fitted transmat:\n", hmm_method.model.transmat_
     for t in range(0,test_sequence_length):
         hmm_method.test(data_test, labels_test, target = t)
-
-
-for train_seq_len in range(2,10): # lower bound must be min 2
-    run(procs                 = 6,
-        states                = states,
-        transmat              = transmat,
-        num_samples           = NUM_SAMPLES,
-        train_sequence_length = train_seq_len,
-        outdir                = OUTDIR)
