@@ -134,14 +134,14 @@ class Simulate_data():
         outfile = os.path.join(outdir, filename)
         image.to_filename(outfile)
 
-    def save_test_data(self, state_seq, obs_seq, outdir):
+    def float_to_nifti_(self, state_seq, obs_seq, outdir):
         """ This function is multithreaded """
         try:
             while True:
                 sample_idx = self.queue_[0].get()
                 singlelock.acquire()
                 for col_idx in range(state_seq.shape[1]):
-                    print sample_idx, col_idx, state_seq[sample_idx, col_idx]
+                    #print sample_idx, col_idx, state_seq[sample_idx, col_idx]
                     obs_image   = self.array_to_image_(obs_seq[sample_idx, col_idx], 0, (121, 145, 121), 121*145*121)
                     state_image = self.array_to_image_(state_seq[sample_idx, col_idx], 0 , (121, 145, 121), 121*145*121)
                     image_ = []
@@ -154,14 +154,13 @@ class Simulate_data():
         except:
             print "Unexpected error:", sys.exc_info()
 
-    def save_test_data_threading_(self, procs, state_seq, obs_seq, outdir):
+    def float_to_nifti_threading_(self, procs, state_seq, obs_seq, outdir):
         print "saving test data to nifti..."
         for i in range(procs):
             print "thread", i
-            t = threading.Thread(target = self.save_test_data, args = [state_seq, obs_seq, outdir])
+            t = threading.Thread(target = self.float_to_nifti_, args = [state_seq, obs_seq, outdir])
             t.daemon = True
             t.start()
-            print i, "start"
         for sample_idx in range(state_seq.shape[0]):
             self.queue_[0].put(sample_idx)
         # block until tasks are done
@@ -226,14 +225,20 @@ class HMM():
     def test(self,data, labels, target):
         self.infer_state(data, labels, target)
 
-       
+
+def run(procs, states, transmat, num_samples, train_sequence_length, outdir):
+
+    #
+    #print "#############################"
+    #print "Predict next state"
+    #hmm_method.predict_next_state(hmm_method.qi, labels_test)
+
 ########################### 
 #    Static Parameters    #
 ###########################
 
 np.random.seed(1)
 OUTDIR = "/home/sgoh/workspace//simdata"
-PROCS = 6
 # States Definition
 s0 = {'pdf': 'normal',
       'mu': 0,
@@ -251,8 +256,8 @@ s3 = {'pdf': 'normal',
 ############################ 
 #    Dynamic Parameters    #
 ############################
-n = 50
-SEQUENCE_LENGTH = 4
+NUM_SAMPLES = 500
+TEST_SEQUENCE_LENGTH = 4
 
 ###########################
 #          MAIN           #
@@ -271,39 +276,52 @@ print transmat
 #                      [0.1, 0.2, 0.7]])
 # transmat /= transmat.sum(axis = 1)
 
-# init
 sim = Simulate_data(states_dict = states,
                     transmat    = transmat,
-                    samples     = n)
+                    samples     = NUM_SAMPLES)
 # Test data
-state_seq_test = sim.generate_state_sequence(sequence_length = SEQUENCE_LENGTH)
-data_test   = sim.generate_observations(Q = state_seq_test, sequence_length = SEQUENCE_LENGTH)
-labels_test = state_seq_test.copy()
-obs_header = ','.join(["obs_{:d}".format(n) for n in range(0,SEQUENCE_LENGTH)])
-state_header = ','.join(["state_{:d}".format(n) for n in range(0,SEQUENCE_LENGTH)])
-np.savetxt(os.path.join(OUTDIR, "Sim.test.data.csv"), data_test, delimiter=",", fmt = "%1.03f", header = obs_header)
-np.savetxt(os.path.join(OUTDIR, "Sim.test.labels.csv"), labels_test, delimiter=",", fmt = "%1d",header = state_header)
-sim.save_test_data_threading_(procs = PROCS, state_seq = state_seq_test, obs_seq = data_test, outdir = OUTDIR)
+state_seq_test = sim.generate_state_sequence(sequence_length = TEST_SEQUENCE_LENGTH)
+data_test      = sim.generate_observations(Q = state_seq_test, sequence_length = TEST_SEQUENCE_LENGTH)
+labels_test    = state_seq_test.copy()
+obs_header     = ','.join(["obs_{:d}".format(n) for n in range(0, TEST_SEQUENCE_LENGTH)])
+state_header   = ','.join(["state_{:d}".format(n) for n in range(0, TEST_SEQUENCE_LENGTH)])
+np.savetxt(os.path.join(outdir, "Sim.test.data.csv"), data_test, delimiter=",", fmt = "%1.03f", header = obs_header)
+np.savetxt(os.path.join(outdir, "Sim.test.labels.csv"), labels_test, delimiter=",", fmt = "%1d", header = state_header)
+sim.float_to_nifti_threading_(procs = procs, state_seq = state_seq_test, obs_seq = data_test, outdir = outdir)
 
-# Train data
-for s in range(2,5): # lower must start at 2
-    print "-------------------------------------------------"
+
+
+for train_seq_len in range(2,10): # lower bound must be min 2
+    # init
+    components = len(states)
+    sim = Simulate_data(states_dict = states,
+                        transmat    = transmat,
+                        samples     = num_samples)
+    # Train data
     print "-------------------------------------------------"
     print "Training with sequence length {:d}".format(s)
     print "-------------------------------------------------"
-    print "-------------------------------------------------"
-
-    state_seq_train = sim.generate_state_sequence(sequence_length = s)
-    data_train      = sim.generate_observations(Q = state_seq_train, sequence_length = s)
+    #
+    state_seq_train = sim.generate_state_sequence(sequence_length = train_sequence_length)
+    data_train      = sim.generate_observations(Q = state_seq_train, sequence_length = train_sequence_length)
     labels_train    = state_seq_train.copy()
+    np.savetxt(os.path.join(outdir, "Sim.train.data.seq.{:02d}.csv".format(train_sequence_length)), data_train, delimiter=",", fmt = "%1.03f", header = obs_header)
+    np.savetxt(os.path.join(outdir, "Sim.train.labels.seq.{:02d}.csv".format(train_sequence_length)), labels_train, delimiter=",", fmt = "%1d", header = state_header)
+    #
     hmm_method = HMM()
     hmm_method.train(data_train, n_components = components)
-    hmm_method.test(data_test, labels_test, target = 0)
-    hmm_method.test(data_test, labels_test, target = 1)
-
-    print "#############################"
-    print "Predict next state"
-    hmm_method.predict_next_state(hmm_method.qi, labels_test)
+    #
     print "#############################"
     print "True transmat:\n", transmat
     print "Fitted transmat:\n", hmm_method.model.transmat_
+    for t in range(0,test_sequence_length):
+        hmm_method.test(data_test, labels_test, target = t)
+
+
+for train_seq_len in range(2,10): # lower bound must be min 2
+    run(procs                 = 6,
+        states                = states,
+        transmat              = transmat,
+        num_samples           = NUM_SAMPLES,
+        train_sequence_length = train_seq_len,
+        outdir                = OUTDIR)
