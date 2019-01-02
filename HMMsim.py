@@ -1,8 +1,11 @@
+#!/home/sgoh/anaconda2/bin/python
+
 from hmmlearn import hmm
 from itertools import permutations
 import threading, Queue
 import numpy as np
 import nibabel as ni
+import pandas as pd
 import matplotlib.pyplot as plt
 import time
 import debug
@@ -10,13 +13,17 @@ import pdb
 import sys, os
 singlelock = threading.Lock()
 
+## 
+## we are on local ~/workspace
+##
+
 class Simulate_data():
     def __init__(self, states_dict, transmat, samples = 900):
         self.states       = states_dict
         self.transmat     = transmat
         self.n_samples    = samples
         self.n_components = len(states_dict)
-        self.queue_ = [Queue.Queue()]
+        self.queue_       = [Queue.Queue()]
         #
         self.check_states_def_()
 
@@ -34,8 +41,7 @@ class Simulate_data():
         self.mixture_ = np.concatenate([norm, exp])
 
     def check_states_def_(self):
-        print "#############################"
-        print "Checking states definition"
+        print "## Checking states definition"
         for q in self.states:
             try:
                 q["pdf"]
@@ -69,9 +75,6 @@ class Simulate_data():
         return x
 
     def next_state_(self, qi):
-        # transmat_ = self.transmat[(int(qi))][:self.n_components] / self.transmat[(int(qi))][:self.n_components].sum()
-        # return np.random.choice(np.arange(0, self.n_components), p = transmat_)
-        #pdb.set_trace()
         return np.random.choice(np.arange(0, self.n_components), p = self.transmat[int(qi)])
 
     def generate_state_sequence(self, sequence_length):
@@ -82,8 +85,7 @@ class Simulate_data():
         for i in range(1, sequence_length):
             Q[:, i] = np.asarray([self.next_state_(qi) for qi in Q[:, i-1]])
         Q = Q.astype(int)
-        print "#############################"
-        print "State sequence:", Q.shape
+        print "## State sequence:", Q.shape
 
         return Q
 
@@ -134,14 +136,14 @@ class Simulate_data():
         outfile = os.path.join(outdir, filename)
         image.to_filename(outfile)
 
-    def save_test_data(self, state_seq, obs_seq, outdir):
+    def float_to_nifti_(self, state_seq, obs_seq, outdir):
         """ This function is multithreaded """
         try:
             while True:
                 sample_idx = self.queue_[0].get()
                 singlelock.acquire()
                 for col_idx in range(state_seq.shape[1]):
-                    print sample_idx, col_idx, state_seq[sample_idx, col_idx]
+                    #print sample_idx, col_idx, state_seq[sample_idx, col_idx]
                     obs_image   = self.array_to_image_(obs_seq[sample_idx, col_idx], 0, (121, 145, 121), 121*145*121)
                     state_image = self.array_to_image_(state_seq[sample_idx, col_idx], 0 , (121, 145, 121), 121*145*121)
                     image_ = []
@@ -154,14 +156,16 @@ class Simulate_data():
         except:
             print "Unexpected error:", sys.exc_info()
 
-    def save_test_data_threading_(self, procs, state_seq, obs_seq, outdir):
+    def float_to_nifti_threading_(self, procs, state_seq, obs_seq, outdir):
+        nifti_dir = os.path.join(outdir, "Nifti")
+        if not os.path.exists(nifti_dir):
+            os.mkdir(nifti_dir)
         print "saving test data to nifti..."
         for i in range(procs):
             print "thread", i
-            t = threading.Thread(target = self.save_test_data, args = [state_seq, obs_seq, outdir])
+            t = threading.Thread(target = self.float_to_nifti_, args = [state_seq, obs_seq, nifti_dir])
             t.daemon = True
             t.start()
-            print i, "start"
         for sample_idx in range(state_seq.shape[0]):
             self.queue_[0].put(sample_idx)
         # block until tasks are done
@@ -173,11 +177,10 @@ class HMM():
         #self.labels = labels
         #self.n_components = n_components
         self.model = ""
-        #
-        self.qi = ""
-        self.qj = ""
+        self.qi    = ""
+        self.qj    = ""
 
-    def remap_states(self, states):
+    def remap_states_(self, states):
         unique =  np.unique(states)
         perm   = permutations(unique)
         remap  = []
@@ -187,36 +190,41 @@ class HMM():
         return remap
 
     def accuracy(self, pred, labels):
-        err_count = np.where(abs(pred - labels) > 0, 1, 0)
+        err_count   = np.where(abs(pred - labels) > 0, 1, 0)
         err_percent = err_count.sum() / float(len(err_count))
-        print "acc", 1- err_percent
+        acc         = 1 - err_percent
+        print "acc", acc
+
+        return acc
 
     def infer_state(self, data, labels, target = 0):
         """
         target: state i, j, k,...
         """
-        print "#############################"
-        print "Inferring state {:d}".format(target)
+
+        #print " ## Inferring state {:d}".format(target)
+        color(" ## Inferring state {:d}".format(target))
         # infer S_i
-        X = data[:, target].reshape(-1,1)
-        n = data.shape[0]
-        lengths_arr = np.array([X.shape[1]] * int(n))
-        self.qi = self.model.predict(X, lengths_arr)
-        remap = self.remap_states(self.qi)
-        pred = [[perm[s] for s in self.qi] for perm in remap]
-        [self.accuracy(l, labels[:, target]) for l in pred]
+        X                  = data[:, target].reshape(-1,1)
+        n                  = data.shape[0]
+        lengths_arr        = np.array([X.shape[1]] * int(n))
+        self.qi            = self.model.predict(X, lengths_arr)
+        self.qi_remap      = self.remap_states_(self.qi) # remap predicted states
+        pred               = [[perm[s] for s in self.qi] for perm in self.qi_remap]
+        acc_cumulative     = [self.accuracy(l, labels[:, target]) for l in pred]
+        self.sorted_acc    = np.sort(np.asarray(acc_cumulative)).reshape(-1,1)
+        self.sorted_labels = np.argsort(np.asarray(acc_cumulative)).reshape(-1,1)
 
     def predict_next_state(self, qi, labels_test):
         self.qj = [np.argmax(self.model.transmat_[row]) for row in self.qi]
-        remap = self.remap_states(self.qj)
-        #pdb.set_trace()
-        pred = [[perm[s] for s in self.qj] for perm in remap]
+        remap   = self.remap_states_(self.qj)
+        pred    = [[perm[s] for s in self.qj] for perm in remap]
         [self.accuracy(l, labels_test[:, 1]) for l in pred]
 
     def train(self, data, n_components):
         #self.model = hmm.GMMHMM(n_components = 3, n_iter = 200, covariance_type = 'full')
-        self.model = hmm.GaussianHMM(n_components = n_components, n_iter = 200, covariance_type = 'full')
-        X = data.flatten().reshape(-1,1)
+        self.model  = hmm.GaussianHMM(n_components = n_components, n_iter = 200, covariance_type = 'full')
+        X           = data.flatten().reshape(-1,1)
         lengths_arr = np.array([data.shape[1]] * int(data.shape[0]))
         tic = time.clock()
         self.model.fit(X, lengths_arr)
@@ -226,14 +234,32 @@ class HMM():
     def test(self,data, labels, target):
         self.infer_state(data, labels, target)
 
-       
-########################### 
-#    Static Parameters    #
-###########################
+def color(message):
+    print '\033[92m'+message+'\033[0m'
 
-np.random.seed(1)
-OUTDIR = "/home/sgoh/workspace//simdata"
-PROCS = 6
+def Generate_test_data(sim_instance, test_seq_len, outdir, procs = 6):
+    # fixed test sequence length
+    state_seq_test = sim_instance.generate_state_sequence(sequence_length = test_seq_len)
+    data_test      = sim_instance.generate_observations(Q = state_seq_test, sequence_length = test_seq_len)
+    labels_test    = state_seq_test.copy()
+    # Save data
+    obs_header   = ','.join(["obs_{:d}".format(n) for n in range(0, test_seq_len)])
+    state_header = ','.join(["state_{:d}".format(n) for n in range(0, test_seq_len)])
+    np.savetxt(os.path.join(OUTDIR, "Transition_matrix.csv"), transmat, delimiter = ",", fmt="%1.03f")
+    np.savetxt(os.path.join(OUTDIR, "Sim.test.data.seq_len.{:02d}.csv".format(test_seq_len)), data_test, delimiter=",", fmt = "%1.03f", header = obs_header)
+    np.savetxt(os.path.join(OUTDIR, "Sim.test.labels.seq_len.{:02d}.csv".format(test_seq_len)), labels_test, delimiter=",", fmt = "%1d", header = state_header)
+    sim_instance.float_to_nifti_threading_(procs = procs, state_seq = state_seq_test, obs_seq = data_test, outdir = outdir)
+
+    return data_test, labels_test
+
+###################################
+#    Static/Dynamic Parameters    #
+###################################
+PROCS                = 8
+NUM_SAMPLES          = 900
+TEST_SEQUENCE_LENGTH = 5
+OUTDIR               = "/mnt/ssd2/HMMsim00"
+
 # States Definition
 s0 = {'pdf': 'normal',
       'mu': 0,
@@ -248,62 +274,75 @@ s3 = {'pdf': 'normal',
       'mu': 0.8,
       'sigma': 0.08}
 
-############################ 
-#    Dynamic Parameters    #
-############################
-n = 50
-SEQUENCE_LENGTH = 4
-
-###########################
-#          MAIN           #
-###########################
-states = [s0, s1, s2, s3]
-
-# N components
-components = len(states)
+STATES     = [s0, s1, s2, s3]
+COMPONENTS = len(STATES)
 
 # Transition matrix
-transmat = np.random.rand(components, components)
-transmat /= np.tile(transmat.sum(axis = 1), (components, 1)).T
-print transmat
+transmat = np.random.rand(COMPONENTS, COMPONENTS)
+transmat /= np.tile(transmat.sum(axis = 1), (COMPONENTS, 1)).T
 # transmat = np.array([[0.5, 0.3, 0.2],
 #                      [0.1, 0.6, 0.3],
 #                      [0.1, 0.2, 0.7]])
 # transmat /= transmat.sum(axis = 1)
+print transmat
 
-# init
-sim = Simulate_data(states_dict = states,
+###########################
+#          MAIN           #
+###########################
+np.random.seed(1)
+
+sim = Simulate_data(states_dict = STATES,
                     transmat    = transmat,
-                    samples     = n)
-# Test data
-state_seq_test = sim.generate_state_sequence(sequence_length = SEQUENCE_LENGTH)
-data_test   = sim.generate_observations(Q = state_seq_test, sequence_length = SEQUENCE_LENGTH)
-labels_test = state_seq_test.copy()
-obs_header = ','.join(["obs_{:d}".format(n) for n in range(0,SEQUENCE_LENGTH)])
-state_header = ','.join(["state_{:d}".format(n) for n in range(0,SEQUENCE_LENGTH)])
-np.savetxt(os.path.join(OUTDIR, "Sim.test.data.csv"), data_test, delimiter=",", fmt = "%1.03f", header = obs_header)
-np.savetxt(os.path.join(OUTDIR, "Sim.test.labels.csv"), labels_test, delimiter=",", fmt = "%1d",header = state_header)
-sim.save_test_data_threading_(procs = PROCS, state_seq = state_seq_test, obs_seq = data_test, outdir = OUTDIR)
+                    samples     = NUM_SAMPLES)
+if False:
+    data_test, labels_test = Generate_test_data(sim_instance = sim, 
+                                                test_seq_len = TEST_SEQUENCE_LENGTH, 
+                                                outdir       = OUTDIR,
+                                                procs        = 6)
+else:
+    # Load test data instead
+    data_test   = np.loadtxt(os.path.join(OUTDIR, "Sim.test.data.seq_len.{:02d}.csv".format(TEST_SEQUENCE_LENGTH)), delimiter = "," )
+    labels_test = np.loadtxt(os.path.join(OUTDIR, "Sim.test.labels.seq_len.{:02d}.csv".format(TEST_SEQUENCE_LENGTH)), delimiter = "," )
 
-# Train data
-for s in range(2,5): # lower must start at 2
-    print "-------------------------------------------------"
-    print "-------------------------------------------------"
-    print "Training with sequence length {:d}".format(s)
-    print "-------------------------------------------------"
-    print "-------------------------------------------------"
-
-    state_seq_train = sim.generate_state_sequence(sequence_length = s)
-    data_train      = sim.generate_observations(Q = state_seq_train, sequence_length = s)
+# Vary train sequence length
+df  = pd.DataFrame()
+df2 = pd.DataFrame()
+for train_seq_len in range(2,10): # lower bound must be min 2
+    tmp_df  = pd.DataFrame()
+    tmp_df2 = pd.DataFrame()
+    # Train data
+    color("-------------------------------------------------")
+    color("Training with sequence length {:d}".format(train_seq_len))
+    color("-------------------------------------------------")
+    #
+    state_seq_train = sim.generate_state_sequence(sequence_length = train_seq_len)
+    data_train      = sim.generate_observations(Q = state_seq_train, sequence_length = train_seq_len)
     labels_train    = state_seq_train.copy()
+    obs_header      = ','.join(["obs_{:d}".format(n) for n in range(0, train_seq_len)])
+    state_header    = ','.join(["state_{:d}".format(n) for n in range(0, train_seq_len)])
+    np.savetxt(os.path.join(OUTDIR, "Sim.train.data.seq_len.{:02d}.csv".format(train_seq_len)), data_train, delimiter=",", fmt = "%1.03f", header = obs_header)
+    np.savetxt(os.path.join(OUTDIR, "Sim.train.labels.seq_len.{:02d}.csv".format(train_seq_len)), labels_train, delimiter=",", fmt = "%1d", header = state_header)
+    #
     hmm_method = HMM()
-    hmm_method.train(data_train, n_components = components)
-    hmm_method.test(data_test, labels_test, target = 0)
-    hmm_method.test(data_test, labels_test, target = 1)
-
-    print "#############################"
-    print "Predict next state"
-    hmm_method.predict_next_state(hmm_method.qi, labels_test)
+    hmm_method.train(data_train, n_components = COMPONENTS)
+    np.savetxt(os.path.join(OUTDIR, "Fitted_transmat.train_seq_len.{:02d}".format(train_seq_len)))
+    pdb.set_trace()
+    #
     print "#############################"
     print "True transmat:\n", transmat
     print "Fitted transmat:\n", hmm_method.model.transmat_
+    for t in range(0, TEST_SEQUENCE_LENGTH):
+        hmm_method.test(data_test, labels_test, target = t)
+        acc_    = pd.DataFrame()
+        labels_ = pd.DataFrame()
+        acc_["Train_len_{:02d}_target_{:02d}".format(train_seq_len, t)]    = np.squeeze(hmm_method.sorted_acc)
+        labels_["Train_len_{:02d}_target_{:02d}".format(train_seq_len, t)] = np.squeeze(hmm_method.sorted_labels)
+        tmp_df  = pd.concat([tmp_df, acc_], axis = 1)
+        tmp_df2 = pd.concat([tmp_df2, labels_], axis = 1)
+        with open(os.path.join(OUTDIR, "Remappings.current.state.train_seq_len.{:02d}.txt".format(train_seq_len)), 'w') as fp: # These should all be the same
+            for perm in hmm_method.qi_remap:
+                fp.write("{:s}\n".format(str(perm)))
+    df  = pd.concat([df, tmp_df], axis = 1)
+    df2 = pd.concat([df2, tmp_df2], axis = 1)
+df.to_csv(os.path.join(OUTDIR, "State_inference_acc.csv"), index = False)
+df2.to_csv(os.path.join(OUTDIR, "State_inference_best_permutation.csv"), index = False)
