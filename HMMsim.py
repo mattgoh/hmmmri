@@ -325,6 +325,8 @@ for train_seq_len in range(2,10): # lower bound must be min 2
     #
     hmm_method = HMM()
     hmm_method.train(data_train, n_components = COMPONENTS)
+    np.savetxt(os.path.join(OUTDIR, "Fitted_transmat.train_seq_len.{:02d}".format(train_seq_len)))
+    pdb.set_trace()
     #
     print "#############################"
     print "True transmat:\n", transmat
