@@ -43,7 +43,7 @@ class Simulate_data():
                     try:
                         [q[param] for param in ["mu", "sigma"]]
                     except KeyError, e:
-                        print 'KeyError: missing paramater {:s}'.format(str(e))
+                        print 'KeyError: missing parameter {:s}'.format(str(e))
                 elif q["pdf"] == "mixture":
                     try:
                         [q[param] for param in ["mu", "sigma", "scale"]]
