@@ -1,5 +1,4 @@
 #!/home/sgoh/anaconda2/bin/python
-from .. import debug
 from hmmlearn import hmm
 from itertools import permutations
 import threading, Queue
